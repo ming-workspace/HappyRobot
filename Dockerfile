@@ -8,6 +8,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     gcc \
     python3-dev \
+    libpq-dev \  # Required for psycopg2
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first to leverage Docker cache
@@ -17,8 +18,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application files
 COPY . .
 
-# Expose both service ports
-EXPOSE 8000 8001
+# Run as non-root user for security
+RUN useradd -m appuser && chown -R appuser:appuser /app
+USER appuser
 
-# Command to start both services
-CMD ["sh", "-c", "python verify_carrier.py & python find_available_loads.py"]
+# Single service per container (command will be overridden by docker-compose)
+CMD ["python", "find_available_loads.py"]

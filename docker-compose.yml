@@ -2,23 +2,48 @@
 version: '3.8'
 
 services:
+  postgres:
+    image: postgres:15-alpine
+    env_file: .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   load-service:
     image: happyrobot-loads
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8001:8001"
     env_file: .env
     volumes:
       - ./allowed_references.csv:/app/allowed_references.csv
     command: python find_available_loads.py
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   carrier-service:
     image: happyrobot-carriers
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     env_file: .env
     command: python verify_carrier.py
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   reverse-proxy:
     image: nginx:alpine
@@ -29,3 +54,6 @@ services:
     depends_on:
       - load-service
       - carrier-service
+
+volumes:
+  postgres_data:
