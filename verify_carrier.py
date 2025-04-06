@@ -4,6 +4,7 @@ import json
 import requests
 import logging
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlparse, unquote
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class VerifyCarrierHandler(BaseHTTPRequestHandler):
-    ROUTE = '/carriers/'
+    ROUTE = '/carriers'
 
     def _set_headers(self, status=200):
         self.send_response(status)
@@ -51,7 +52,7 @@ class VerifyCarrierHandler(BaseHTTPRequestHandler):
         if not mc_number.isdigit() or len(mc_number) != 6:
             self._send_error(400, "Invalid MC number format",
                              {"expected": "6 digits", "received": mc_number})
-            return None  # Terminate execution here
+            return None
 
         try:
             response = requests.get(
@@ -65,6 +66,7 @@ class VerifyCarrierHandler(BaseHTTPRequestHandler):
 
             response.raise_for_status()
             content = response.json().get('content', [])
+
             return {
                 "valid": bool(content),
                 "mc_number": mc_number,
@@ -88,23 +90,23 @@ class VerifyCarrierHandler(BaseHTTPRequestHandler):
             return None
 
     def do_GET(self):
-        if not self.path.startswith(self.ROUTE):
-            return self._send_error(404, "Invalid endpoint")
+        parsed_path = urlparse(unquote(self.path))
+        path_parts = parsed_path.path.strip('/').split('/')
+
+        # Validate endpoint structure
+        if len(path_parts) != 2 or path_parts[0] != 'carriers':
+            return self._send_error(404, "Invalid endpoint structure. Use /carriers/<mc-number>")
 
         if not self._authenticate():
             return
 
-        try:
-            mc_number = self.path[len(self.ROUTE):].split('/')[0]
-            if not mc_number:
-                return self._send_error(400, "Missing MC number")
+        mc_number = path_parts[1]
+        if not mc_number:
+            return self._send_error(400, "Missing MC number")
 
-            result = self._verify_mc(mc_number)
-            if result is not None:  # Only process if no errors were sent
-                self._send_response(result)
-        except Exception as e:
-            logger.error(f"Processing error: {str(e)}")
-            self._send_error(500, "Internal server error")
+        result = self._verify_mc(mc_number)
+        if result is not None:
+            self._send_response(result)
 
 
 def run_server(port=8000):

@@ -34,7 +34,7 @@ class LoadService(BaseHTTPRequestHandler):
                     'rate': float(row['rate']),
                     'commodity': row['commodity'].strip().upper()
                 } for row in reader]
-            logger.info(f"Loaded {len(cls.loads)} loads")
+            logger.info(f"Loaded {len(cls.loads)} loads from CSV")
         except Exception as e:
             logger.error(f"CSV load failed: {str(e)}")
             raise
@@ -68,23 +68,20 @@ class LoadService(BaseHTTPRequestHandler):
             error["details"] = details
         self._send_response(error, status)
 
-    def _handle_search(self):
-        query = urlparse(self.path).query
-        params = parse_qs(query)
+    def _search_loads(self, params):
         ref_nums = [r.strip().upper() for r in params.get('reference_number', [''])[0].split(',') if r.strip()]
         origin = params.get('origin', [''])[0].strip().upper()
         dest = params.get('destination', [''])[0].strip().upper()
         equipment = params.get('equipment_type', [''])[0].strip().upper()
 
-        # Validation logic
+        # Validation
         if not ref_nums and (origin or dest):
             missing = []
             if not origin: missing.append('origin')
             if not dest: missing.append('destination')
             if missing:
-                return self._send_error(400, "Missing required parameters", {"missing": missing})
+                return [], {"error": "Missing required parameters", "missing": missing}
 
-        # Search logic
         results = []
         if ref_nums:
             results = [load for load in self.loads if load['reference_number'] in ref_nums]
@@ -97,30 +94,38 @@ class LoadService(BaseHTTPRequestHandler):
                    and (not equipment or equipment in load['equipment_type'].split(' OR '))
             ]
 
-        return {
-            "count": len(results),
-            "results": results,
-            "message": "No matches found" if not results else None
-        }
+        return results
 
     def do_GET(self):
-        if not self.path.startswith(self.ROUTE):
-            return self._send_error(404, "Invalid endpoint")
+        parsed_path = urlparse(self.path)
+
+        if parsed_path.path != self.ROUTE:
+            return self._send_error(404, f"Invalid endpoint: {parsed_path.path}")
 
         if not self._authenticate():
             return
 
         try:
-            if self.path == self.ROUTE:
-                result = self._handle_search()
-                if result['count'] == 0:
-                    self._send_response(result, 404)
-                else:
-                    self._send_response(result)
+            params = parse_qs(parsed_path.query)
+            results = self._search_loads(params)
+
+            if isinstance(results, tuple) and len(results) == 2 and isinstance(results[1], dict):
+                results, error = results
+                return self._send_error(400, error.get("error"), error.get("details"))
+
+            response = {
+                "count": len(results),
+                "results": results
+            }
+
+            if not results:
+                response["message"] = "No matching loads found"
+                self._send_response(response, 404)
             else:
-                self._send_error(404, "Invalid endpoint")
+                self._send_response(response)
+
         except Exception as e:
-            logger.error(f"Processing error: {str(e)}")
+            logger.error(f"Processing error: {str(e)}", exc_info=True)
             self._send_error(500, "Internal server error")
 
 
