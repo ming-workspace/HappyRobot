@@ -88,38 +88,33 @@ class LoadService(BaseHTTPRequestHandler):
         conditions = []
         values = []
 
-        # Required parameters
-        required_params = ['origin', 'destination', 'equipment_type']
-        missing_params = [p for p in required_params if p not in params or not params[p][0].strip()]
-        if missing_params:
-            raise ValueError(f"Missing required parameters: {missing_params}")
-
-        # Origin handling (case-insensitive)
-        origin = params['origin'][0].strip()
-        conditions.append("origin ILIKE %s")
-        values.append(f"%{origin}%")
-
-        # Destination handling (case-insensitive)
-        destination = params['destination'][0].strip()
-        conditions.append("destination ILIKE %s")
-        values.append(f"%{destination}%")
-
-        # Equipment type (exact match)
-        equipment = params['equipment_type'][0].strip()
-        if not equipment:
-            raise ValueError("Equipment type cannot be empty")
-        conditions.append("equipment_type = %s")
-        values.append(equipment.upper())  # Match database case
-
-        # Optional reference number
-        if 'reference_number' in params:
+        # Reference number search (exact match)
+        if 'reference_number' in params and params['reference_number'][0].strip():
             ref_nums = [r.strip().upper() for r in params['reference_number'][0].split(',') if r.strip()]
             if ref_nums:
                 conditions.append("reference_number = ANY(%s)")
                 values.append(ref_nums)
+                return base_query + " AND " + " AND ".join(conditions), values
 
-        query = base_query + " AND " + " AND ".join(conditions)
-        return query, values
+        # Lane + equipment search (case-insensitive partial match)
+        required_params = ['origin', 'destination', 'equipment_type']
+        for param in required_params:
+            if param not in params or not params[param][0].strip():
+                raise ValueError(f"Missing required parameter: {param}")
+
+        origin = params['origin'][0].strip()
+        conditions.append("origin ILIKE %s")
+        values.append(f"%{origin}%")
+
+        destination = params['destination'][0].strip()
+        conditions.append("destination ILIKE %s")
+        values.append(f"%{destination}%")
+
+        equipment = params['equipment_type'][0].strip()
+        conditions.append("equipment_type ILIKE %s")
+        values.append(f"%{equipment}%")
+
+        return base_query + " AND " + " AND ".join(conditions), values
 
     def _search_loads(self, params):
         try:
@@ -147,14 +142,30 @@ class LoadService(BaseHTTPRequestHandler):
 
         try:
             params = parse_qs(parsed_path.query)
+
+            # Prioritize reference_number search
+            if 'reference_number' in params and params['reference_number'][0].strip():
+                results = self._search_loads(params)
+                response = {"count": len(results), "results": results}
+                self._send_response(response)
+                return
+
+            # Validate lane + equipment parameters
+            required_params = ['origin', 'destination', 'equipment_type']
+            missing_params = [p for p in required_params if p not in params or not params[p][0].strip()]
+
+            if missing_params:
+                self._send_error(400, "Missing required parameters", {"missing": missing_params})
+                return
+
             results = self._search_loads(params)
+            response = {"count": len(results), "results": results}
 
-            response = {
-                "count": len(results),
-                "results": results
-            }
-
-            self._send_response(response)
+            if not results:
+                response["message"] = "No matching loads found"
+                self._send_response(response, 404)
+            else:
+                self._send_response(response)
 
         except ValueError as e:
             self._send_error(400, "Invalid request", {"details": str(e)})
@@ -165,7 +176,7 @@ class LoadService(BaseHTTPRequestHandler):
 
 def run(port=8001):
     server = HTTPServer(('', port), LoadService)
-    logger.info(f"DB Load Service running on port {port}")
+    logger.info(f"Load Service running on port {port}")
     server.serve_forever()
 
 
