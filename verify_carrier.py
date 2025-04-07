@@ -29,6 +29,10 @@ class VerifyCarrierHandler(BaseHTTPRequestHandler):
         api_key = self.headers.get('X-API-Key')
         valid_keys = os.getenv("MING_HAPPYROBOT_API_KEYS", "").split(',')
 
+        logger.info(f"Received API Key Header: {'Present' if api_key else 'Missing'}")
+        logger.info(f"Configured Keys Count: {len(valid_keys)}")
+        logger.info(f"Key Match Status: {api_key in valid_keys}")
+
         if not api_key or api_key not in valid_keys:
             self._send_error(401, "Invalid or missing API key")
             return False
