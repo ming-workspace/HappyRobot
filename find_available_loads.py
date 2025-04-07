@@ -29,7 +29,7 @@ class LoadService(BaseHTTPRequestHandler):
 
     def _db_connection(self):
         try:
-            conn = psycopg2.connect(
+            return psycopg2.connect(
                 dbname=os.getenv('DB_NAME'),
                 user=os.getenv('DB_USER'),
                 password=os.getenv('DB_PASSWORD'),
@@ -37,8 +37,6 @@ class LoadService(BaseHTTPRequestHandler):
                 port=os.getenv('DB_PORT', '5432'),
                 connect_timeout=5
             )
-            conn.autocommit = True
-            return conn
         except psycopg2.Error as e:
             logger.error(f"Database connection failed: {str(e)}")
             raise
@@ -52,11 +50,6 @@ class LoadService(BaseHTTPRequestHandler):
     def _authenticate(self):
         api_key = self.headers.get('X-API-Key')
         valid_keys = os.getenv("MING_HAPPYROBOT_API_KEYS", "").split(',')
-
-        logger.info(f"Received API Key Header: {'Present' if api_key else 'Missing'}")
-        logger.info(f"Configured Keys Count: {len(valid_keys)}")
-        logger.info(f"Key Match Status: {api_key in valid_keys}")
-
         if not api_key or api_key not in valid_keys:
             self._send_error(401, "Invalid or missing API key")
             return False
@@ -67,122 +60,99 @@ class LoadService(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(data, cls=DecimalEncoder).encode())
 
     def _send_error(self, status, message, details=None):
-        error = {
-            "error": message,
-            "status": status,
-            "path": self.path
-        }
-        if details:
-            error["details"] = details
+        error = {"error": message, "status": status, "path": self.path}
+        if details: error["details"] = details
         self._send_response(error, status)
 
-    def _decode_parameters(self, raw_params):
-        decoded = {}
-        for key, values in raw_params.items():
-            if key == 'reference_number':
-                decoded_values = []
-                for v in values:
-                    decoded_values.extend(unquote(v).strip().split(','))
-                decoded[key] = [v.strip().upper() for v in decoded_values if v.strip()]
-            else:
-                processed = []
-                for v in values:
-                    cleaned = unquote(v).strip()
-                    if key in ['origin', 'destination']:
-                        # Extract city part before the first comma
-                        city_part = cleaned.split(',', 1)[0].strip()
-                        cleaned = city_part
-                    elif key == 'equipment_type':
-                        cleaned = ' '.join(cleaned.replace(',', ' ').strip().split())
-                    processed.append(cleaned)
-                decoded[key] = processed
-        return decoded
+    def _get_reference_number_from_path(self, path):
+        path_parts = path.strip('/').split('/')
+        if len(path_parts) == 2 and path_parts[0] == 'loads':
+            return path_parts[1].upper()
+        return None
 
-    def _build_query(self, params):
-        base_query = """
-            SELECT 
-                reference_number, 
-                origin, 
-                destination,
-                equipment_type, 
-                rate::float,
-                commodity
-            FROM loads
-            WHERE 1=1
-        """
-        conditions = []
-        values = []
-
-        # Reference number search (exact match)
-        if params.get('reference_number'):
-            ref_nums = params['reference_number']
-            if ref_nums:
-                conditions.append("UPPER(reference_number) = ANY(%s)")
-                values.append(ref_nums)
-                return base_query + " AND " + " AND ".join(conditions), values
-
-        # Lane search (case-insensitive city match)
-        lane_params = ['origin', 'destination', 'equipment_type']
-        if all(params.get(p) for p in lane_params):
-            origin = params['origin'][0]
-            conditions.append("TRIM(SPLIT_PART(origin, ',', 1)) ILIKE %s")
-            values.append(f"%{origin}%")
-
-            destination = params['destination'][0]
-            conditions.append("TRIM(SPLIT_PART(destination, ',', 1)) ILIKE %s")
-            values.append(f"%{destination}%")
-
-            equipment = params['equipment_type'][0]
-            conditions.append("equipment_type ILIKE %s")
-            values.append(f"%{equipment}%")
-
-            return base_query + " AND " + " AND ".join(conditions), values
-
-        # No valid parameters case
-        return base_query + " AND FALSE", []
-
-    def _search_loads(self, params):
+    def _handle_reference_number_request(self, reference_number):
         try:
-            query, values = self._build_query(params)
-            logger.info(f"Executing query: {query} with values: {values}")
             with self._db_connection() as conn, conn.cursor() as cur:
-                cur.execute(query, values)
+                cur.execute("""
+                    SELECT reference_number, origin, destination, 
+                           equipment_type, rate::float, commodity
+                    FROM loads
+                    WHERE UPPER(reference_number) = %s
+                """, (reference_number,))
+
                 columns = [desc[0] for desc in cur.description]
-                return [dict(zip(columns, row)) for row in cur.fetchall()]
-        except Exception as e:
+                result = cur.fetchone()
+
+                if not result:
+                    return self._send_error(404, "Load not found",
+                                            {"reference_number": reference_number})
+
+                load_data = dict(zip(columns, result))
+                self._send_response(load_data)
+
+        except psycopg2.Error as e:
             logger.error(f"Database error: {str(e)}")
-            return []
+            self._send_error(500, "Database operation failed")
+
+    def _handle_search_request(self, params):
+        try:
+            with self._db_connection() as conn, conn.cursor() as cur:
+                base_query = """
+                    SELECT reference_number, origin, destination, 
+                           equipment_type, rate::float, commodity
+                    FROM loads
+                    WHERE 1=1
+                """
+                conditions = []
+                values = []
+
+                if params.get('origin'):
+                    conditions.append("origin ILIKE %s")
+                    values.append(f"%{params['origin'][0]}%")
+
+                if params.get('destination'):
+                    conditions.append("destination ILIKE %s")
+                    values.append(f"%{params['destination'][0]}%")
+
+                if params.get('equipment_type'):
+                    conditions.append("equipment_type ILIKE %s")
+                    values.append(f"%{params['equipment_type'][0]}%")
+
+                if conditions:
+                    query = base_query + " AND " + " AND ".join(conditions)
+                    cur.execute(query, values)
+                else:
+                    cur.execute(base_query)
+
+                columns = [desc[0] for desc in cur.description]
+                results = [dict(zip(columns, row)) for row in cur.fetchall()]
+
+                response = {
+                    "count": len(results),
+                    "results": results,
+                    "message": "No matching loads found" if not results else None
+                }
+                self._send_response(response)
+
+        except psycopg2.Error as e:
+            logger.error(f"Database error: {str(e)}")
+            self._send_error(500, "Database operation failed")
 
     def do_GET(self):
-        parsed_path = urlparse(self.path)
-        clean_path = parsed_path.path.rstrip('/')
-
-        if clean_path != self.ROUTE:
-            return self._send_error(404, f"Invalid endpoint: {parsed_path.path}")
-
         if not self._authenticate():
             return
 
-        try:
-            raw_params = parse_qs(parsed_path.query)
-            params = self._decode_parameters(raw_params)
-            results = self._search_loads(params)
+        parsed_url = urlparse(self.path)
+        reference_number = self._get_reference_number_from_path(parsed_url.path)
 
-            response = {
-                "count": len(results),
-                "results": results,
-                "message": "No matching loads found" if not results else None
-            }
+        if reference_number:
+            self._handle_reference_number_request(reference_number)
+        else:
+            if parsed_url.path.rstrip('/') != self.ROUTE:
+                return self._send_error(404, "Invalid endpoint")
 
-            self._send_response(response)
-
-        except Exception as e:
-            logger.error(f"Processing error: {str(e)}", exc_info=True)
-            self._send_response({
-                "count": 0,
-                "results": [],
-                "message": "No matching loads found"
-            })
+            params = parse_qs(parsed_url.query)
+            self._handle_search_request(params)
 
 
 def run(port=8001):
