@@ -1,4 +1,3 @@
-# find_available_loads.py
 import os
 import csv
 import json
@@ -74,7 +73,6 @@ class LoadService(BaseHTTPRequestHandler):
         dest = params.get('destination', [''])[0].strip().upper()
         equipment = params.get('equipment_type', [''])[0].strip().upper()
 
-        # Validation
         if not ref_nums and (origin or dest):
             missing = []
             if not origin: missing.append('origin')
@@ -98,8 +96,9 @@ class LoadService(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed_path = urlparse(self.path)
+        clean_path = parsed_path.path.rstrip('/')  # Normalize path
 
-        if parsed_path.path != self.ROUTE:
+        if clean_path != self.ROUTE:
             return self._send_error(404, f"Invalid endpoint: {parsed_path.path}")
 
         if not self._authenticate():
@@ -108,10 +107,6 @@ class LoadService(BaseHTTPRequestHandler):
         try:
             params = parse_qs(parsed_path.query)
             results = self._search_loads(params)
-
-            if isinstance(results, tuple) and len(results) == 2 and isinstance(results[1], dict):
-                results, error = results
-                return self._send_error(400, error.get("error"), error.get("details"))
 
             response = {
                 "count": len(results),
