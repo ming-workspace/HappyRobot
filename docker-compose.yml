@@ -6,6 +6,7 @@ services:
     env_file: .env
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./loads.sql:/docker-entrypoint-initdb.d/loads.sql
     environment:
       POSTGRES_DB: ${DB_NAME}
       POSTGRES_USER: ${DB_USER}
@@ -31,6 +32,19 @@ services:
       postgres:
         condition: service_healthy
 
+  load-service-db:
+    image: happyrobot-loads-db
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8002"
+    env_file: .env
+    command: python find_available_loads_db.py
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   carrier-service:
     image: happyrobot-carriers
     build:
@@ -51,11 +65,13 @@ services:
       - "443:443"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf
-      - ~/ssl-certs:/etc/ssl/certs  # SSL certificate volume
+      - ./ssl-certs:/etc/ssl/certs
     depends_on:
       - load-service
+      - load-service-db
       - carrier-service
     restart: unless-stopped
 
 volumes:
   postgres_data:
+  ssl-certs:
