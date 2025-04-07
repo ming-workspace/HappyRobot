@@ -3,4 +3,5 @@
   <component name="Black">
     <option name="sdkName" value="Python 3.13 (MingC_HappyRobot)" />
   </component>
+  <component name="ProjectRootManager" version="2" project-jdk-name="Remote Python 3.9.20 (sftp://ec2-user@ec2-18-220-90-158.us-east-2.compute.amazonaws.com:22/home/ec2-user/.virtualenvs/MingC_HappyRobot/bin/python)" project-jdk-type="Python SDK" />
 </project>
