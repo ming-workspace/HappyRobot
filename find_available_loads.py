@@ -6,7 +6,7 @@ import logging
 import psycopg2
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -73,6 +73,12 @@ class LoadService(BaseHTTPRequestHandler):
             error["details"] = details
         self._send_response(error, status)
 
+    def _decode_parameters(self, params):
+        decoded = {}
+        for key, values in params.items():
+            decoded[key] = [unquote(v).strip() for v in values]
+        return decoded
+
     def _build_query(self, params):
         base_query = """
             SELECT 
@@ -89,30 +95,33 @@ class LoadService(BaseHTTPRequestHandler):
         values = []
 
         # Reference number search (exact match)
-        if 'reference_number' in params and params['reference_number'][0].strip():
-            ref_nums = [r.strip().upper() for r in params['reference_number'][0].split(',') if r.strip()]
+        if params.get('reference_number'):
+            ref_nums = [r.upper() for r in params['reference_number'] if r]
             if ref_nums:
                 conditions.append("reference_number = ANY(%s)")
                 values.append(ref_nums)
                 return base_query + " AND " + " AND ".join(conditions), values
 
-        # Lane + equipment search (case-insensitive partial match)
-        required_params = ['origin', 'destination', 'equipment_type']
-        for param in required_params:
-            if param not in params or not params[param][0].strip():
-                raise ValueError(f"Missing required parameter: {param}")
+        # Lane search (case-insensitive partial match)
+        required_params = ['origin', 'destination']
+        missing_params = [p for p in required_params if not params.get(p)]
 
-        origin = params['origin'][0].strip()
+        if missing_params:
+            raise ValueError(f"Missing required parameters: {missing_params}")
+
+        origin = params['origin'][0]
         conditions.append("origin ILIKE %s")
         values.append(f"%{origin}%")
 
-        destination = params['destination'][0].strip()
+        destination = params['destination'][0]
         conditions.append("destination ILIKE %s")
         values.append(f"%{destination}%")
 
-        equipment = params['equipment_type'][0].strip()
-        conditions.append("equipment_type ILIKE %s")
-        values.append(f"%{equipment}%")
+        # Optional equipment type filter
+        if params.get('equipment_type'):
+            equipment = params['equipment_type'][0]
+            conditions.append("equipment_type ILIKE %s")
+            values.append(f"%{equipment}%")
 
         return base_query + " AND " + " AND ".join(conditions), values
 
@@ -141,18 +150,20 @@ class LoadService(BaseHTTPRequestHandler):
             return
 
         try:
-            params = parse_qs(parsed_path.query)
+            # Handle URL encoding and double question marks
+            raw_params = parse_qs(parsed_path.query)
+            params = self._decode_parameters(raw_params)
 
             # Prioritize reference_number search
-            if 'reference_number' in params and params['reference_number'][0].strip():
+            if params.get('reference_number'):
                 results = self._search_loads(params)
                 response = {"count": len(results), "results": results}
                 self._send_response(response)
                 return
 
-            # Validate lane + equipment parameters
-            required_params = ['origin', 'destination', 'equipment_type']
-            missing_params = [p for p in required_params if p not in params or not params[p][0].strip()]
+            # Validate required parameters
+            required_params = ['origin', 'destination']
+            missing_params = [p for p in required_params if not params.get(p)]
 
             if missing_params:
                 self._send_error(400, "Missing required parameters", {"missing": missing_params})
