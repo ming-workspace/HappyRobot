@@ -25,8 +25,8 @@ class DecimalEncoder(json.JSONEncoder):
         return super().default(o)
 
 
-class LoadServiceDB(BaseHTTPRequestHandler):
-    ROUTE = '/loads_db'
+class LoadService(BaseHTTPRequestHandler):
+    ROUTE = '/loads'
 
     def _db_connection(self):
         try:
@@ -162,8 +162,8 @@ class LoadServiceDB(BaseHTTPRequestHandler):
             self._send_error(500, "Internal server error")
 
 
-def run(port=8002):
-    server = HTTPServer(('', port), LoadServiceDB)
+def run(port=8001):
+    server = HTTPServer(('', port), LoadService)
     logger.info(f"DB Load Service running on port {port}")
     server.serve_forever()
 

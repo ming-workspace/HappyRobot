@@ -17,6 +17,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - app-network
 
   load-service:
     image: happyrobot-loads
@@ -26,10 +28,12 @@ services:
     ports:
       - "8001:8001"
     env_file: .env
-    command: python finds_available_loads.py
+    command: python find_available_loads.py
     depends_on:
       postgres:
         condition: service_healthy
+    networks:
+      - app-network
 
   carrier-service:
     image: happyrobot-carriers
@@ -43,6 +47,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    networks:
+      - app-network
 
   reverse-proxy:
     image: nginx:alpine
@@ -55,7 +61,13 @@ services:
     depends_on:
       - load-service
       - carrier-service
+    networks:
+      - app-network
     restart: unless-stopped
 
 volumes:
   postgres_data:
+
+networks:
+  app-network:
+    driver: bridge
