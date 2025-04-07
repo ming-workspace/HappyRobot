@@ -80,7 +80,7 @@ class LoadService(BaseHTTPRequestHandler):
                 origin, 
                 destination,
                 equipment_type, 
-                rate::float,  -- Explicit cast to float
+                rate::float,
                 commodity
             FROM loads
             WHERE 1=1
@@ -88,34 +88,37 @@ class LoadService(BaseHTTPRequestHandler):
         conditions = []
         values = []
 
+        # Required parameters
+        required_params = ['origin', 'destination', 'equipment_type']
+        missing_params = [p for p in required_params if p not in params or not params[p][0].strip()]
+        if missing_params:
+            raise ValueError(f"Missing required parameters: {missing_params}")
+
+        # Origin handling (case-insensitive)
+        origin = params['origin'][0].strip()
+        conditions.append("origin ILIKE %s")
+        values.append(f"%{origin}%")
+
+        # Destination handling (case-insensitive)
+        destination = params['destination'][0].strip()
+        conditions.append("destination ILIKE %s")
+        values.append(f"%{destination}%")
+
+        # Equipment type (exact match)
+        equipment = params['equipment_type'][0].strip()
+        if not equipment:
+            raise ValueError("Equipment type cannot be empty")
+        conditions.append("equipment_type = %s")
+        values.append(equipment.upper())  # Match database case
+
+        # Optional reference number
         if 'reference_number' in params:
             ref_nums = [r.strip().upper() for r in params['reference_number'][0].split(',') if r.strip()]
             if ref_nums:
                 conditions.append("reference_number = ANY(%s)")
                 values.append(ref_nums)
 
-        if 'origin' in params:
-            origin = params['origin'][0].strip().upper()
-            if origin:
-                conditions.append("origin = %s")
-                values.append(origin)
-
-        if 'destination' in params:
-            dest = params['destination'][0].strip().upper()
-            if dest:
-                conditions.append("destination = %s")
-                values.append(dest)
-
-        if 'equipment_type' in params:
-            equipment = params['equipment_type'][0].strip().upper()
-            if equipment:
-                conditions.append("equipment_type ILIKE %s")
-                values.append(f"%{equipment}%")
-
-        query = base_query
-        if conditions:
-            query += " AND " + " AND ".join(conditions)
-
+        query = base_query + " AND " + " AND ".join(conditions)
         return query, values
 
     def _search_loads(self, params):
@@ -125,11 +128,11 @@ class LoadService(BaseHTTPRequestHandler):
                 cur.execute(query, values)
                 columns = [desc[0] for desc in cur.description]
                 return [dict(zip(columns, row)) for row in cur.fetchall()]
-        except psycopg2.Error as e:
-            logger.error(f"Database query failed: {str(e)}")
+        except ValueError as e:
+            logger.error(f"Validation error: {str(e)}")
             raise
-        except Exception as e:
-            logger.error(f"Unexpected error: {str(e)}")
+        except psycopg2.Error as e:
+            logger.error(f"Database error: {str(e)}")
             raise
 
     def do_GET(self):
@@ -151,12 +154,10 @@ class LoadService(BaseHTTPRequestHandler):
                 "results": results
             }
 
-            if not results:
-                response["message"] = "No matching loads found"
-                self._send_response(response, 404)
-            else:
-                self._send_response(response)
+            self._send_response(response)
 
+        except ValueError as e:
+            self._send_error(400, "Invalid request", {"details": str(e)})
         except Exception as e:
             logger.error(f"Processing error: {str(e)}", exc_info=True)
             self._send_error(500, "Internal server error")
