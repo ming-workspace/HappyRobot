@@ -49,10 +49,13 @@ class VerifyCarrierHandler(BaseHTTPRequestHandler):
         self._send_response(error, status)
 
     def _verify_mc(self, mc_number):
+        # Check if MC number is valid (6 digits)
         if not mc_number.isdigit() or len(mc_number) != 6:
-            self._send_error(400, "Invalid MC number format",
-                             {"expected": "6 digits", "received": mc_number})
-            return None
+            return {
+                "valid": False,
+                "mc_number": mc_number,
+                "error": "Invalid MC number format"
+            }
 
         try:
             response = requests.get(
@@ -91,10 +94,15 @@ class VerifyCarrierHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed_path = urlparse(unquote(self.path))
-        path_parts = parsed_path.path.strip('/').split('/')
+        path = parsed_path.path
 
-        # Validate endpoint structure
-        if len(path_parts) != 2 or path_parts[0] != 'carriers':
+        # Extract MC number from path
+        if path.startswith('/carriers/'):
+            mc_number = path[len('/carriers/'):]
+        elif path == '/carriers':
+            mc_number = ''
+        else:
+            # Invalid endpoint
             return self._send_error(404,
                                     "Invalid endpoint. Use format: /carriers/<mc-number>",
                                     {"example": "/carriers/123456"}
@@ -102,10 +110,6 @@ class VerifyCarrierHandler(BaseHTTPRequestHandler):
 
         if not self._authenticate():
             return
-
-        mc_number = path_parts[1]
-        if not mc_number:
-            return self._send_error(400, "Missing MC number")
 
         result = self._verify_mc(mc_number)
         if result is not None:
