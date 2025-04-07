@@ -73,10 +73,17 @@ class LoadService(BaseHTTPRequestHandler):
             error["details"] = details
         self._send_response(error, status)
 
-    def _decode_parameters(self, params):
+    def _decode_parameters(self, raw_params):
         decoded = {}
-        for key, values in params.items():
-            decoded[key] = [unquote(v).strip() for v in values]
+        for key, values in raw_params.items():
+            if key == 'reference_number':
+                # Split comma-separated reference numbers
+                decoded_values = []
+                for v in values:
+                    decoded_values.extend(unquote(v).strip().split(','))
+                decoded[key] = [v.strip().upper() for v in decoded_values if v.strip()]
+            else:
+                decoded[key] = [unquote(v).strip() for v in values]
         return decoded
 
     def _build_query(self, params):
@@ -96,9 +103,9 @@ class LoadService(BaseHTTPRequestHandler):
 
         # Reference number search (exact match)
         if params.get('reference_number'):
-            ref_nums = [r.upper() for r in params['reference_number'] if r]
+            ref_nums = params['reference_number']
             if ref_nums:
-                conditions.append("reference_number = ANY(%s)")
+                conditions.append("UPPER(reference_number) = ANY(%s)")
                 values.append(ref_nums)
                 return base_query + " AND " + " AND ".join(conditions), values
 
@@ -117,9 +124,11 @@ class LoadService(BaseHTTPRequestHandler):
         conditions.append("destination ILIKE %s")
         values.append(f"%{destination}%")
 
-        # Optional equipment type filter
+        # Equipment type (substring match)
         if params.get('equipment_type'):
             equipment = params['equipment_type'][0]
+            if not equipment:
+                raise ValueError("Equipment type cannot be empty")
             conditions.append("equipment_type ILIKE %s")
             values.append(f"%{equipment}%")
 
@@ -150,7 +159,6 @@ class LoadService(BaseHTTPRequestHandler):
             return
 
         try:
-            # Handle URL encoding and double question marks
             raw_params = parse_qs(parsed_path.query)
             params = self._decode_parameters(raw_params)
 
@@ -162,7 +170,7 @@ class LoadService(BaseHTTPRequestHandler):
                 return
 
             # Validate required parameters
-            required_params = ['origin', 'destination']
+            required_params = ['origin', 'destination', 'equipment_type']
             missing_params = [p for p in required_params if not params.get(p)]
 
             if missing_params:
