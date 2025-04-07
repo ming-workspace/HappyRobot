@@ -1,5 +1,4 @@
 # find_available_loads.py
-
 import os
 import json
 import logging
@@ -54,6 +53,10 @@ class LoadService(BaseHTTPRequestHandler):
         api_key = self.headers.get('X-API-Key')
         valid_keys = os.getenv("MING_HAPPYROBOT_API_KEYS", "").split(',')
 
+        logger.info(f"Received API Key Header: {'Present' if api_key else 'Missing'}")
+        logger.info(f"Configured Keys Count: {len(valid_keys)}")
+        logger.info(f"Key Match Status: {api_key in valid_keys}")
+
         if not api_key or api_key not in valid_keys:
             self._send_error(401, "Invalid or missing API key")
             return False
@@ -73,17 +76,26 @@ class LoadService(BaseHTTPRequestHandler):
             error["details"] = details
         self._send_response(error, status)
 
+    def _normalize_param(self, value):
+        """Normalize parameter values for case-insensitive matching"""
+        return ' '.join(value.replace(',', ' ').strip().split())
+
     def _decode_parameters(self, raw_params):
         decoded = {}
         for key, values in raw_params.items():
             if key == 'reference_number':
-                # Split comma-separated reference numbers
                 decoded_values = []
                 for v in values:
                     decoded_values.extend(unquote(v).strip().split(','))
                 decoded[key] = [v.strip().upper() for v in decoded_values if v.strip()]
             else:
-                decoded[key] = [unquote(v).strip() for v in values]
+                processed = []
+                for v in values:
+                    cleaned = unquote(v).strip()
+                    if key in ['origin', 'destination', 'equipment_type']:
+                        cleaned = ' '.join(cleaned.replace(',', ' ').strip().split())
+                    processed.append(cleaned)
+                decoded[key] = processed
         return decoded
 
     def _build_query(self, params):
@@ -110,29 +122,24 @@ class LoadService(BaseHTTPRequestHandler):
                 return base_query + " AND " + " AND ".join(conditions), values
 
         # Lane search (case-insensitive partial match)
-        required_params = ['origin', 'destination']
-        missing_params = [p for p in required_params if not params.get(p)]
+        lane_params = ['origin', 'destination', 'equipment_type']
+        if all(params.get(p) for p in lane_params):
+            origin = params['origin'][0]
+            conditions.append("origin ILIKE %s")
+            values.append(f"%{origin}%")
 
-        if missing_params:
-            raise ValueError(f"Missing required parameters: {missing_params}")
+            destination = params['destination'][0]
+            conditions.append("destination ILIKE %s")
+            values.append(f"%{destination}%")
 
-        origin = params['origin'][0]
-        conditions.append("origin ILIKE %s")
-        values.append(f"%{origin}%")
-
-        destination = params['destination'][0]
-        conditions.append("destination ILIKE %s")
-        values.append(f"%{destination}%")
-
-        # Equipment type (substring match)
-        if params.get('equipment_type'):
             equipment = params['equipment_type'][0]
-            if not equipment:
-                raise ValueError("Equipment type cannot be empty")
             conditions.append("equipment_type ILIKE %s")
             values.append(f"%{equipment}%")
 
-        return base_query + " AND " + " AND ".join(conditions), values
+            return base_query + " AND " + " AND ".join(conditions), values
+
+        # No valid parameters case
+        return base_query + " AND FALSE", []
 
     def _search_loads(self, params):
         try:
@@ -141,12 +148,9 @@ class LoadService(BaseHTTPRequestHandler):
                 cur.execute(query, values)
                 columns = [desc[0] for desc in cur.description]
                 return [dict(zip(columns, row)) for row in cur.fetchall()]
-        except ValueError as e:
-            logger.error(f"Validation error: {str(e)}")
-            raise
-        except psycopg2.Error as e:
+        except Exception as e:
             logger.error(f"Database error: {str(e)}")
-            raise
+            return []
 
     def do_GET(self):
         parsed_path = urlparse(self.path)
@@ -161,36 +165,23 @@ class LoadService(BaseHTTPRequestHandler):
         try:
             raw_params = parse_qs(parsed_path.query)
             params = self._decode_parameters(raw_params)
-
-            # Prioritize reference_number search
-            if params.get('reference_number'):
-                results = self._search_loads(params)
-                response = {"count": len(results), "results": results}
-                self._send_response(response)
-                return
-
-            # Validate required parameters
-            required_params = ['origin', 'destination', 'equipment_type']
-            missing_params = [p for p in required_params if not params.get(p)]
-
-            if missing_params:
-                self._send_error(400, "Missing required parameters", {"missing": missing_params})
-                return
-
             results = self._search_loads(params)
-            response = {"count": len(results), "results": results}
 
-            if not results:
-                response["message"] = "No matching loads found"
-                self._send_response(response, 404)
-            else:
-                self._send_response(response)
+            response = {
+                "count": len(results),
+                "results": results,
+                "message": "No matching loads found" if not results else None
+            }
 
-        except ValueError as e:
-            self._send_error(400, "Invalid request", {"details": str(e)})
+            self._send_response(response)
+
         except Exception as e:
             logger.error(f"Processing error: {str(e)}", exc_info=True)
-            self._send_error(500, "Internal server error")
+            self._send_response({
+                "count": 0,
+                "results": [],
+                "message": "No matching loads found"
+            })
 
 
 def run(port=8001):
