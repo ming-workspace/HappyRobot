@@ -1,3 +1,4 @@
+# verify_carrier.py
 import os
 import json
 import requests
@@ -91,15 +92,18 @@ class VerifyCarrierHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed_path = urlparse(unquote(self.path))
         path_parts = parsed_path.path.strip('/').split('/')
-        clean_path = '/'.join(path_parts[:2]).rstrip('/')  # Normalize path
 
-        if clean_path != self.ROUTE:
-            return self._send_error(404, "Invalid endpoint structure")
+        # Validate endpoint structure
+        if len(path_parts) != 2 or path_parts[0] != 'carriers':
+            return self._send_error(404,
+                                    "Invalid endpoint. Use format: /carriers/<mc-number>",
+                                    {"example": "/carriers/123456"}
+                                    )
 
         if not self._authenticate():
             return
 
-        mc_number = path_parts[1] if len(path_parts) > 1 else ''
+        mc_number = path_parts[1]
         if not mc_number:
             return self._send_error(400, "Missing MC number")
 
