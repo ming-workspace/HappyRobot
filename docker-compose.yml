@@ -8,9 +8,10 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./loads.sql:/docker-entrypoint-initdb.d/loads.sql
     environment:
-      POSTGRES_DB: ${DB_NAME}
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_USER: robotadmin
+      POSTGRES_PASSWORD: makehappyrobotgreat
+      POSTGRES_DB: happyrobot
+      POSTGRES_INITDB_ARGS: "--no-locale --encoding=UTF-8"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 5s
