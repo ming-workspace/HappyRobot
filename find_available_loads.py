@@ -1,7 +1,10 @@
+# find_available_loads.py
+
 import os
-import csv
 import json
 import logging
+import psycopg2
+from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 from dotenv import load_dotenv
@@ -15,27 +18,30 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class LoadService(BaseHTTPRequestHandler):
-    loads = []
-    ROUTE = '/loads'
+class DecimalEncoder(json.JSONEncoder):
+    def default(self, o):
+        if isinstance(o, Decimal):
+            return float(o)
+        return super().default(o)
 
-    @classmethod
-    def load_data(cls):
-        csv_path = os.getenv("LOAD_CSV_PATH", "allowed_references.csv")
+
+class LoadServiceDB(BaseHTTPRequestHandler):
+    ROUTE = '/loads_db'
+
+    def _db_connection(self):
         try:
-            with open(csv_path, 'r', encoding='utf-8-sig') as f:
-                reader = csv.DictReader(f)
-                cls.loads = [{
-                    'reference_number': row['reference_number'].strip().upper(),
-                    'origin': row['origin'].strip().upper(),
-                    'destination': row['destination'].strip().upper(),
-                    'equipment_type': row['equipment_type'].strip().upper(),
-                    'rate': float(row['rate']),
-                    'commodity': row['commodity'].strip().upper()
-                } for row in reader]
-            logger.info(f"Loaded {len(cls.loads)} loads from CSV")
-        except Exception as e:
-            logger.error(f"CSV load failed: {str(e)}")
+            conn = psycopg2.connect(
+                dbname=os.getenv('DB_NAME'),
+                user=os.getenv('DB_USER'),
+                password=os.getenv('DB_PASSWORD'),
+                host=os.getenv('DB_HOST', 'postgres'),
+                port=os.getenv('DB_PORT', '5432'),
+                connect_timeout=5
+            )
+            conn.autocommit = True
+            return conn
+        except psycopg2.Error as e:
+            logger.error(f"Database connection failed: {str(e)}")
             raise
 
     def _set_headers(self, status=200):
@@ -55,7 +61,7 @@ class LoadService(BaseHTTPRequestHandler):
 
     def _send_response(self, data, status=200):
         self._set_headers(status)
-        self.wfile.write(json.dumps(data).encode())
+        self.wfile.write(json.dumps(data, cls=DecimalEncoder).encode())
 
     def _send_error(self, status, message, details=None):
         error = {
@@ -67,36 +73,68 @@ class LoadService(BaseHTTPRequestHandler):
             error["details"] = details
         self._send_response(error, status)
 
+    def _build_query(self, params):
+        base_query = """
+            SELECT 
+                reference_number, 
+                origin, 
+                destination,
+                equipment_type, 
+                rate::float,  -- Explicit cast to float
+                commodity
+            FROM loads
+            WHERE 1=1
+        """
+        conditions = []
+        values = []
+
+        if 'reference_number' in params:
+            ref_nums = [r.strip().upper() for r in params['reference_number'][0].split(',') if r.strip()]
+            if ref_nums:
+                conditions.append("reference_number = ANY(%s)")
+                values.append(ref_nums)
+
+        if 'origin' in params:
+            origin = params['origin'][0].strip().upper()
+            if origin:
+                conditions.append("origin = %s")
+                values.append(origin)
+
+        if 'destination' in params:
+            dest = params['destination'][0].strip().upper()
+            if dest:
+                conditions.append("destination = %s")
+                values.append(dest)
+
+        if 'equipment_type' in params:
+            equipment = params['equipment_type'][0].strip().upper()
+            if equipment:
+                conditions.append("equipment_type ILIKE %s")
+                values.append(f"%{equipment}%")
+
+        query = base_query
+        if conditions:
+            query += " AND " + " AND ".join(conditions)
+
+        return query, values
+
     def _search_loads(self, params):
-        ref_nums = [r.strip().upper() for r in params.get('reference_number', [''])[0].split(',') if r.strip()]
-        origin = params.get('origin', [''])[0].strip().upper()
-        dest = params.get('destination', [''])[0].strip().upper()
-        equipment = params.get('equipment_type', [''])[0].strip().upper()
-
-        if not ref_nums and (origin or dest):
-            missing = []
-            if not origin: missing.append('origin')
-            if not dest: missing.append('destination')
-            if missing:
-                return [], {"error": "Missing required parameters", "missing": missing}
-
-        results = []
-        if ref_nums:
-            results = [load for load in self.loads if load['reference_number'] in ref_nums]
-
-        if not results and origin and dest:
-            results = [
-                load for load in self.loads
-                if load['origin'] == origin
-                   and load['destination'] == dest
-                   and (not equipment or equipment in load['equipment_type'].split(' OR '))
-            ]
-
-        return results
+        try:
+            query, values = self._build_query(params)
+            with self._db_connection() as conn, conn.cursor() as cur:
+                cur.execute(query, values)
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        except psycopg2.Error as e:
+            logger.error(f"Database query failed: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error: {str(e)}")
+            raise
 
     def do_GET(self):
         parsed_path = urlparse(self.path)
-        clean_path = parsed_path.path.rstrip('/')  # Normalize path
+        clean_path = parsed_path.path.rstrip('/')
 
         if clean_path != self.ROUTE:
             return self._send_error(404, f"Invalid endpoint: {parsed_path.path}")
@@ -124,10 +162,9 @@ class LoadService(BaseHTTPRequestHandler):
             self._send_error(500, "Internal server error")
 
 
-def run(port=8001):
-    LoadService.load_data()
-    server = HTTPServer(('', port), LoadService)
-    logger.info(f"Load service running on port {port}")
+def run(port=8002):
+    server = HTTPServer(('', port), LoadServiceDB)
+    logger.info(f"DB Load Service running on port {port}")
     server.serve_forever()
 
 
