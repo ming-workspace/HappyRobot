@@ -76,10 +76,6 @@ class LoadService(BaseHTTPRequestHandler):
             error["details"] = details
         self._send_response(error, status)
 
-    def _normalize_param(self, value):
-        """Normalize parameter values for case-insensitive matching"""
-        return ' '.join(value.replace(',', ' ').strip().split())
-
     def _decode_parameters(self, raw_params):
         decoded = {}
         for key, values in raw_params.items():
@@ -92,7 +88,11 @@ class LoadService(BaseHTTPRequestHandler):
                 processed = []
                 for v in values:
                     cleaned = unquote(v).strip()
-                    if key in ['origin', 'destination', 'equipment_type']:
+                    if key in ['origin', 'destination']:
+                        # Extract city part before the first comma
+                        city_part = cleaned.split(',', 1)[0].strip()
+                        cleaned = city_part
+                    elif key == 'equipment_type':
                         cleaned = ' '.join(cleaned.replace(',', ' ').strip().split())
                     processed.append(cleaned)
                 decoded[key] = processed
@@ -121,15 +121,15 @@ class LoadService(BaseHTTPRequestHandler):
                 values.append(ref_nums)
                 return base_query + " AND " + " AND ".join(conditions), values
 
-        # Lane search (case-insensitive partial match)
+        # Lane search (case-insensitive city match)
         lane_params = ['origin', 'destination', 'equipment_type']
         if all(params.get(p) for p in lane_params):
             origin = params['origin'][0]
-            conditions.append("origin ILIKE %s")
+            conditions.append("TRIM(SPLIT_PART(origin, ',', 1)) ILIKE %s")
             values.append(f"%{origin}%")
 
             destination = params['destination'][0]
-            conditions.append("destination ILIKE %s")
+            conditions.append("TRIM(SPLIT_PART(destination, ',', 1)) ILIKE %s")
             values.append(f"%{destination}%")
 
             equipment = params['equipment_type'][0]
@@ -144,6 +144,7 @@ class LoadService(BaseHTTPRequestHandler):
     def _search_loads(self, params):
         try:
             query, values = self._build_query(params)
+            logger.info(f"Executing query: {query} with values: {values}")
             with self._db_connection() as conn, conn.cursor() as cur:
                 cur.execute(query, values)
                 columns = [desc[0] for desc in cur.description]
